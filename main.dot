@@ -1,0 +1,18 @@
+graph {
+    // Nodes
+    n1 [label="1"]
+    n2 [label="2"]
+    n3 [label="3"]
+    n4 [label="4"]
+    n5 [label="5"]
+    n6 [label="6"]
+    n7 [label="7"]
+
+    // Edges
+    n3 -- n7 
+    n3 -- n6
+    n2 -- n5
+    n2 -- n4
+    n1 -- n3
+    n1 -- n2
+}
