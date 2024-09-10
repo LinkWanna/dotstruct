@@ -1,21 +1,28 @@
-use std::{ffi::{c_char, c_ulonglong, CString}, io::Write, process::{Command, Stdio}};
+use std::{
+    collections::HashMap, 
+    ffi::{c_char, c_longlong, c_ulonglong, CString}, 
+    io::Write, 
+    process::{Command, Stdio},
+    sync::Mutex
+};
+use lazy_static::lazy_static;
 
+lazy_static! {
+    static ref TIMES: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
+}
 
-
-static mut TIMES: u64 = 0;
-static mut GRAPH: Graph = Graph { nodes: vec![], edges: vec![] };
+static mut GRAPH: Graph = Graph { 
+    directed: 1,
+    root: -1, 
+    nodes: vec![],
+    edges: vec![],
+};
 
 #[derive(Debug)]
 struct Node {
     id: c_ulonglong,
     label: CString,
 }
-
-// impl Drop for Node {
-//     fn drop(&mut self) {
-//         println!("drop node {}", self.id)
-//     }
-// }
 
 #[derive(Debug)]
 struct Edge {
@@ -25,22 +32,40 @@ struct Edge {
 }
 
 
+
+/// 默认值
+/// directed: 1（有向图）
+/// root: -1（代表不指定根节点）
 #[derive(Debug)]
 struct Graph {
+    directed: c_char,
+    root: c_longlong,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
 }
 
 impl Graph  {
+
     pub fn to_dot(&self) -> String {
-        let mut dot = String::from("digraph G {\n");
+        // 判断是否为有向图
+        let( mut dot, arrow) = if self.directed != 0 {
+            (String::from("digraph G {\n"), "->")
+        } else {
+            (String::from("graph G {\n"), "--")
+        };
+
+        // 判断是否有根节点
+        if self.root != -1 {
+            dot += "root [shape=point]\n";
+            dot += format!("root {} n{}\n", arrow, self.root).as_str();
+        }
 
         for node in &self.nodes {
             dot += format!("n{} [label={:?}]\n", node.id, node.label).as_str();
         }
 
         for edge in &self.edges {
-            dot += format!("n{} -> n{}\n", edge.from, edge.to).as_str();
+            dot += format!("n{} {} n{}\n", edge.from, arrow,edge.to).as_str();
         }
         dot += "}\n";
         dot
@@ -52,16 +77,24 @@ impl Graph  {
     }
 }
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
-pub extern "C" fn node(id: c_ulonglong, label: *mut c_char) {
+pub extern "C" fn init(directed: c_char, root: c_longlong) {
+    // 1. 有向图 / 无向图
+    // 2. 根节点定义
     unsafe {
-        let node = Node {
-            id,
-            label: CString::from_raw(label),
-        };
-        GRAPH.nodes.push(node);
+        GRAPH.directed = directed;
+        GRAPH.root = root;
     }
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn node(id: c_ulonglong, label: *mut c_char) {
+    let node = Node {
+        id,
+        label: CString::from_raw(label),
+    };
+    GRAPH.nodes.push(node);
 }
 
 #[no_mangle]
@@ -75,25 +108,32 @@ pub extern "C" fn edge(from: c_ulonglong, to: c_ulonglong) {
     }
 }
 
+/// # Safety
 #[no_mangle]
-pub extern "C" fn recoder() {
-    unsafe { 
-        TIMES += 1; 
-        
-        let mut child = Command::new("dot")
-        .arg("-Tpng")
-        .arg("-o")
-        .arg(format!("debug/gragh{:02}.png", TIMES))
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("failed to execute process");
+pub unsafe  extern "C" fn recoder(name: *mut c_char) {
+    let name = CString::from_raw(name).to_string_lossy().to_string();
+    let mut times = TIMES.lock().unwrap();
     
-        let dot = GRAPH.to_dot();
-        child.stdin.take().unwrap().write_all(dot.as_bytes()).unwrap();
-        child.wait().expect("failed to wait on child");
-        // 清空 GRAPH
-        GRAPH.clear();
+    // 如果不存在
+    if !times.contains_key(&name) {
+        times.insert(name.clone(), 1);
+    } else {
+        *times.get_mut(&name).unwrap() += 1;
     }
+        
+    let mut child = Command::new("dot")
+    .arg("-Tpng")
+    .arg("-o")
+    .arg(format!("debug/{}_gragh{:02}.png", name, times[&name]))
+    .stdin(Stdio::piped())
+    .spawn()
+    .expect("failed to execute process");
+
+    let dot = GRAPH.to_dot();
+    child.stdin.take().unwrap().write_all(dot.as_bytes()).unwrap();
+    child.wait().expect("failed to wait on child");
+    // 清空 GRAPH
+    GRAPH.clear();
 }
 
 #[cfg(test)]
@@ -106,17 +146,17 @@ mod tests {
         let s1 = CString::new("n1").unwrap();
         let s2 = CString::new("n2").unwrap();
         
-        node(1, s1.into_raw());
-        node(2, s2.into_raw());
-        edge(1, 2);
         unsafe {
+            node(1, s1.into_raw());
+            node(2, s2.into_raw());
+            edge(1, 2);
             let dot = GRAPH.to_dot();
             println!("{}", dot);
-            recoder();
+            recoder(CString::new("LL").unwrap().into_raw());
 
             let dot = GRAPH.to_dot();
             print!("{}", dot);
-            recoder()
+            recoder(CString::new("taget").unwrap().into_raw())
         }
     }
 
